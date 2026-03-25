@@ -1,0 +1,8 @@
+PyQt6
+requests
+earth2studio
+torch
+zarr
+xarray
+numpy
+scikit-learn

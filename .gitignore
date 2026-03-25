@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+
+# Local secrets (copy config_secrets.example.py → config_secrets.py)
+src/config_secrets.py
+
+.cursor/
+outputs/
+*.zarr
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
