@@ -1,51 +1,79 @@
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
-import numpy as np
+import httpx
 
 from src.config import CHICAGO_LAT, CHICAGO_LON
 
 logger = logging.getLogger(__name__)
 
-_CACHE_HOURS = 6
+_CACHE_HOURS = 1
+_OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+
+
+_WMO_EMOJI: dict[int, str] = {
+    0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️",
+    45: "🌫️", 48: "🌫️",
+    51: "🌦️", 53: "🌦️", 55: "🌧️",
+    56: "🌧️", 57: "🌧️",
+    61: "🌧️", 63: "🌧️", 65: "🌧️",
+    66: "🌧️", 67: "🌧️",
+    71: "🌨️", 73: "🌨️", 75: "🌨️", 77: "🌨️",
+    80: "🌦️", 81: "🌧️", 82: "🌧️",
+    85: "🌨️", 86: "🌨️",
+    95: "⛈️", 96: "⛈️", 99: "⛈️",
+}
+
+_WMO_NIGHT: dict[int, str] = {
+    0: "🌙", 1: "🌙", 2: "⛅", 3: "☁️",
+}
 
 
 @dataclass
 class WeatherStep:
     valid_time: datetime
-    temperature_k: float
-    wind_u_ms: float
-    wind_v_ms: float
+    temperature_c: float
+    precipitation_mm: float
+    precipitation_probability: int
+    weather_code: int
 
     @property
-    def temperature_f(self) -> float:
-        return (self.temperature_k - 273.15) * 9.0 / 5.0 + 32.0
+    def emoji(self) -> str:
+        hour = self.valid_time.hour
+        is_night = hour < 6 or hour >= 20
+        if is_night and self.weather_code in _WMO_NIGHT:
+            return _WMO_NIGHT[self.weather_code]
+        return _WMO_EMOJI.get(self.weather_code, "🌡️")
+
+
+@dataclass
+class CurrentWeather:
+    temperature_c: float
+    precipitation_mm: float
+    weather_code: int
+    time: datetime
 
     @property
-    def wind_speed_mph(self) -> float:
-        return math.sqrt(self.wind_u_ms**2 + self.wind_v_ms**2) * 2.237
-
-    @property
-    def wind_direction(self) -> str:
-        angle = (math.degrees(math.atan2(-self.wind_u_ms, -self.wind_v_ms)) + 360) % 360
-        dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-        idx = int((angle + 22.5) / 45.0) % 8
-        return dirs[idx]
+    def emoji(self) -> str:
+        is_night = self.time.hour < 6 or self.time.hour >= 20
+        if is_night and self.weather_code in _WMO_NIGHT:
+            return _WMO_NIGHT[self.weather_code]
+        return _WMO_EMOJI.get(self.weather_code, "🌡️")
 
 
 @dataclass
 class WeatherForecast:
     generated_at: datetime
+    current: CurrentWeather | None = None
     steps: list[WeatherStep] = field(default_factory=list)
 
 
 class WeatherService:
-    """Runs NVIDIA Earth2Studio FCN3 to produce a Chicago weather forecast.
-    Results are cached for 6 hours to avoid expensive repeated inference."""
+    """Fetches hourly Chicago weather from the Open-Meteo API.
+    Results are cached for 1 hour."""
 
     def __init__(self) -> None:
         self._cache: WeatherForecast | None = None
@@ -58,57 +86,60 @@ class WeatherService:
                 return self._cache
 
         try:
-            forecast = self._run_model()
+            forecast = self._fetch_forecast()
             self._cache = forecast
             self._last_run = datetime.now()
             return forecast
         except Exception:
-            logger.exception("Earth2Studio forecast failed")
+            logger.exception("Open-Meteo forecast fetch failed")
             return self._cache
 
-    def _run_model(self) -> WeatherForecast:
-        from earth2studio.data import GFS
-        from earth2studio.io import ZarrBackend
-        from earth2studio.models.px import FCN3
-        from earth2studio.run import deterministic as run
+    def _fetch_forecast(self) -> WeatherForecast:
+        params = {
+            "latitude": CHICAGO_LAT,
+            "longitude": CHICAGO_LON,
+            "current": "temperature_2m,precipitation,weather_code",
+            "hourly": "temperature_2m,precipitation_probability,precipitation,weather_code",
+            "temperature_unit": "celsius",
+            "precipitation_unit": "mm",
+            "timezone": "America/Chicago",
+            "forecast_days": 1,
+        }
 
-        model = FCN3.load_model(FCN3.load_default_package())
-        data = GFS()
-        io = ZarrBackend("outputs/chicago_forecast.zarr")
+        resp = httpx.get(_OPEN_METEO_URL, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
 
-        now_utc = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        init_hour = (now_utc.hour // 6) * 6
-        init_time = now_utc.replace(hour=init_hour)
-        init_str = init_time.strftime("%Y-%m-%dT%H:%M:%S")
+        cur = data["current"]
+        current = CurrentWeather(
+            temperature_c=cur["temperature_2m"],
+            precipitation_mm=cur["precipitation"],
+            weather_code=cur["weather_code"],
+            time=datetime.fromisoformat(cur["time"]),
+        )
 
-        nsteps = 10
-        run([init_str], nsteps, model, data, io)
+        hourly = data["hourly"]
+        times = hourly["time"]
+        temps = hourly["temperature_2m"]
+        precip_probs = hourly["precipitation_probability"]
+        precip_amounts = hourly["precipitation"]
+        weather_codes = hourly["weather_code"]
 
-        ds = io.root
-        lats = np.array(ds["lat"])
-        lons = np.array(ds["lon"])
-
-        lat_idx = int(np.argmin(np.abs(lats - CHICAGO_LAT)))
-        lon_target = CHICAGO_LON % 360 if np.all(lons >= 0) else CHICAGO_LON
-        lon_idx = int(np.argmin(np.abs(lons - lon_target)))
+        now = datetime.now()
 
         steps: list[WeatherStep] = []
-        lead_times = ds["lead_time"]
-
-        for i in range(len(lead_times)):
-            valid_time = init_time + timedelta(hours=float(lead_times[i]))
-
-            t2m = float(ds["t2m"][0, i, lat_idx, lon_idx])
-            u10 = float(ds["u10m"][0, i, lat_idx, lon_idx])
-            v10 = float(ds["v10m"][0, i, lat_idx, lon_idx])
-
+        for i, iso_time in enumerate(times):
+            valid_time = datetime.fromisoformat(iso_time)
+            if valid_time < now.replace(minute=0, second=0, microsecond=0):
+                continue
             steps.append(
                 WeatherStep(
                     valid_time=valid_time,
-                    temperature_k=t2m,
-                    wind_u_ms=u10,
-                    wind_v_ms=v10,
+                    temperature_c=temps[i],
+                    precipitation_mm=precip_amounts[i],
+                    precipitation_probability=precip_probs[i],
+                    weather_code=weather_codes[i],
                 )
             )
 
-        return WeatherForecast(generated_at=datetime.now(), steps=steps)
+        return WeatherForecast(generated_at=now, current=current, steps=steps)
