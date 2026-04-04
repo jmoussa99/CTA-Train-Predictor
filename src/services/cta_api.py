@@ -55,7 +55,7 @@ def _parse_eta(eta: dict, now: datetime) -> TrainETA:
 
 
 class CTAClient:
-    def __init__(self, api_key: str = CTA_API_KEY, timeout: int = 5):
+    def __init__(self, api_key: str = CTA_API_KEY, timeout: int = 10):
         self._api_key = api_key
         self._timeout = timeout
         if not (self._api_key or "").strip():
