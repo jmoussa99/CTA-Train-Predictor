@@ -71,15 +71,16 @@ class TrainPanel(QWidget):
         station_label.setFont(QFont(FONT_FAMILY, FONT_HEADER_SIZE, QFont.Weight.Bold))
         station_label.setStyleSheet(f"color: {WHITE};")
 
-        walk_label = QLabel(f"{WALK_TO_SHERIDAN_MIN} min walk")
-        walk_label.setObjectName("headerWalk")
-        walk_label.setFont(QFont(FONT_FAMILY, FONT_METADATA_SIZE))
-        walk_label.setStyleSheet(f"color: #999999;")
-        walk_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
         header_layout.addWidget(station_label)
         header_layout.addStretch()
-        header_layout.addWidget(walk_label)
+
+        if WALK_TO_SHERIDAN_MIN > 0:
+            walk_label = QLabel(f"{WALK_TO_SHERIDAN_MIN} min walk")
+            walk_label.setObjectName("headerWalk")
+            walk_label.setFont(QFont(FONT_FAMILY, FONT_METADATA_SIZE))
+            walk_label.setStyleSheet(f"color: #999999;")
+            walk_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            header_layout.addWidget(walk_label)
 
         root_layout.addWidget(header)
 
